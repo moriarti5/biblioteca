@@ -266,11 +266,15 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
 .dialog-footer .primary-button, .dialog-footer .secondary-button { min-height: 41px; padding-inline: 14px; }
 
 /* Sugerencias de Open Library */
-#suggestions { list-style: none; margin: -8px 0 0; padding: 0; border: 1px solid var(--control); border-radius: 8px; max-height: 260px; overflow: auto; background: var(--card); box-shadow: var(--shadow); }
+#suggestions { list-style: none; margin: -8px 0 0; padding: 0; border: 1px solid var(--control); border-radius: 8px; max-height: min(320px, 45dvh); overflow: auto; overscroll-behavior: contain; background: var(--card); box-shadow: var(--shadow); }
 #suggestions li { display: flex; gap: 10px; padding: 6px 10px; cursor: pointer; align-items: center; color: var(--text); font-size: 13px; }
 #suggestions li:hover, #suggestions li[aria-selected="true"] { background: var(--primary-soft); }
 #suggestions img, #suggestions .noimg { width: 32px; height: 48px; object-fit: cover; border-radius: 3px; background: var(--border-soft); flex: none; }
 #suggestions small { color: var(--muted); display: block; font-size: 12px; }
+/* Salida siempre a la vista: si ninguno es el libro, se sigue con el título escrito */
+#suggestions li.use-typed { position: sticky; bottom: 0; min-height: 48px; border-top: 1px solid var(--border); background: var(--card); color: var(--primary-ink); font-weight: 700; }
+#suggestions li.use-typed:hover, #suggestions li.use-typed[aria-selected="true"] { background: var(--primary-soft); }
+#suggestions li.use-typed small { color: var(--muted); font-weight: 400; }
 
 /* Lectores */
 #dlg-readers { width: min(520px, calc(100% - 28px)); }
@@ -322,15 +326,10 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
 }
 
 @media (max-width: 620px) {
-  html { scroll-padding-bottom: 96px; } /* el botón flotante no tapa lo enfocado */
-  .library-main { width: calc(100% - 34px); padding: 35px 0 96px; }
+  .library-main { width: calc(100% - 34px); padding: 35px 0 56px; }
   .page-heading { flex-direction: column; align-items: flex-start; gap: 16px; margin-bottom: 25px; }
-  .menu-panel { left: 0; right: auto; } /* Opciones queda a la izquierda: el panel se abre hacia la derecha */
   .page-heading h1 { font-size: 39px; }
   .page-subtitle { max-width: 330px; font-size: 13px; }
-  /* Acción principal al alcance del pulgar */
-  .add-book-button { position: fixed; z-index: 5; right: 16px; bottom: 16px; min-height: 48px; padding: 0 20px; border-radius: 24px; box-shadow: 0 6px 16px rgb(53 77 168 / 35%); }
-  #toast { bottom: 80px; }
   .stat-item { min-height: 75px; gap: 10px; padding: 12px; }
   .stat-icon { width: 32px; height: 32px; border-radius: 9px; }
   .stat-icon .icon { width: 15px; height: 15px; }

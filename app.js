@@ -606,11 +606,32 @@ function syncRating() {
 $('cover').addEventListener('input', updatePreview);
 
 // ---------- Búsqueda automática en Open Library ----------
+const SEARCH_LIMIT = 20;
+const SEARCH_TIMEOUT_MS = 12000;
+// Para comparar títulos: sin acentos, mayúsculas ni signos
+const plain = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim(); // algunos títulos de Open Library traen saltos de línea
+// Qué parte de lo escrito aparece en un título (la última palabra puede ir a medias): 0 a 1
+function overlap(typed, title) {
+  const want = plain(typed).split(' ').filter(Boolean);
+  const have = plain(title).split(' ');
+  if (!want.length) return 0;
+  return want.filter((w, i) => have.some((h) => (i === want.length - 1 ? h.startsWith(w) : h === w))).length / want.length;
+}
+// Consulta para Open Library. Con prefix, la última palabra se busca como prefijo ("cien años de sol*"), útil mientras
+// se escribe; sin él, es la búsqueda normal, la única que encuentra los títulos de las ediciones en español.
+function searchQuery(text, prefix) {
+  const words = text.replace(/[+\-&|!(){}\[\]^"~*?:\\/]/g, ' ').split(/\s+/).filter(Boolean);
+  if (!words.length) return '';
+  if (prefix && !/\s$/.test(text)) { const last = words.pop(); words.push(last.length >= 2 ? `${last}*` : last); }
+  return words.join(' ');
+}
+
 $('title').addEventListener('input', () => {
   clearTimeout(searchTimer);
-  const q = $('title').value.trim();
-  if (q.length < 3) { setOpen(false); return; }
-  searchTimer = setTimeout(() => searchBooks(q), 500);
+  const text = $('title').value;
+  if (text.trim().length < 3) { searchSeq++; setOpen(false); return; } // searchSeq++: se ignora una respuesta que llegue tarde
+  searchTimer = setTimeout(() => searchBooks(text), 500);
 });
 
 // Combobox: la lista se recorre con flechas y se elige con Enter
@@ -638,66 +659,157 @@ $('title').addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown') { e.preventDefault(); setActive((activeOpt + 1) % n); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(activeOpt <= 0 ? n - 1 : activeOpt - 1); }
   else if (e.key === 'Enter' && activeOpt >= 0) { e.preventDefault(); ul.children[activeOpt].click(); }
+  else if (e.key === 'Enter') { e.preventDefault(); useTyped(); } // Enter sin elegir: sigue con tu título (no guarda el libro)
   else if (e.key === 'Escape') { e.preventDefault(); setOpen(false); }
 });
+// En el móvil no hay Esc: tocar fuera de la lista, o pasar a otro campo, la cierra
+$('dlg').addEventListener('pointerdown', (e) => {
+  if (!$('suggestions').hidden && !$('suggestions').contains(e.target) && e.target !== $('title')) setOpen(false);
+});
+// Solo cuando el foco pasa a otro campo: al pulsar un resultado el foco va al propio diálogo y la lista no debe cerrarse antes del clic
+$('dlg').addEventListener('focusin', (e) => {
+  if (e.target.matches('input, select, textarea, button, summary') && e.target !== $('title') && !$('suggestions').contains(e.target)) setOpen(false);
+});
+// Tocar la lista no le quita el foco al título (así no se pierde el clic ni se esconde el teclado)
+$('suggestions').addEventListener('mousedown', (e) => e.preventDefault());
 
-async function searchBooks(q) {
+async function fetchBooks(query) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), SEARCH_TIMEOUT_MS);
+  try {
+    // lang=es: de cada obra devuelve la edición en español (título y portada), no solo el título original. Ojo: sin el campo key Open Library no devuelve las ediciones.
+    const url = `https://openlibrary.org/search.json?lang=es&limit=${SEARCH_LIMIT}&fields=key,title,author_name,cover_i,subject,first_publish_year,editions&q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, { signal: ctl.signal });
+    if (!res.ok) throw new Error(res.status);
+    return (await res.json()).docs ?? [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// Las dos búsquedas (normal y por prefijo) a la vez: cada una acierta donde la otra falla. Si una falla, se usa la otra.
+async function fetchBoth(text) {
+  const queries = [...new Set([searchQuery(text, false), searchQuery(text, true)])].filter(Boolean);
+  const settled = await Promise.allSettled(queries.map(fetchBooks));
+  const ok = settled.filter((s) => s.status === 'fulfilled');
+  if (!ok.length) throw settled[0].reason;
+  return ok.flatMap((s) => s.value);
+}
+// Una fila por libro: el título (de la edición en español o el original) que más se parece a lo escrito, sin repetidos,
+// los que más se parecen primero (y los que no se parecen nada solo si no hay otros)
+function parseDocs(docs, typed) {
+  const seen = new Map();
+  for (const d of docs) {
+    const ed = d.editions?.docs?.[0];
+    const title = [clean(ed?.title), clean(d.title)].filter(Boolean).sort((x, y) => overlap(typed, y) - overlap(typed, x))[0];
+    if (!title) continue;
+    const author = clean(d.author_name?.[0]);
+    const fromEdition = title === clean(ed?.title);
+    const item = {
+      title, author, year: d.first_publish_year, genre: clean(d.subject?.[0]),
+      cover: (fromEdition ? ed?.cover_i : d.cover_i) || ed?.cover_i || d.cover_i || null,
+    };
+    // el autor también cuenta ("patria aramburu"); a igual parecido, mejor con portada y con el título más corto
+    item.score = Math.max(overlap(typed, title), overlap(typed, `${title} ${author}`)) + (item.cover ? 0.02 : 0) - title.length * 0.0004;
+    const key = `${plain(title)}|${plain(author)}`;
+    const prev = seen.get(key);
+    if (!prev) seen.set(key, item);
+    else if (!prev.cover && item.cover) { prev.cover = item.cover; prev.score = Math.max(prev.score, item.score); }
+  }
+  const all = [...seen.values()].sort((x, y) => y.score - x.score); // estable: a igual parecido, el orden de Open Library
+  const close = all.filter((r) => r.score >= 0.5);
+  return (close.length ? close : all).slice(0, SEARCH_LIMIT);
+}
+
+async function searchBooks(text) {
   const seq = ++searchSeq;
   $('search-status').textContent = 'Buscando en internet…';
   try {
-    const url = 'https://openlibrary.org/search.json?limit=6&fields=title,author_name,cover_i,subject,first_publish_year&q=' + encodeURIComponent(q);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(res.status);
-    const { docs } = await res.json();
+    let docs = await fetchBoth(text);
+    let note = '';
+    // Sin resultados: se prueba sin la última palabra, por si lleva una errata
+    const words = text.trim().split(/\s+/);
+    if (!docs.length && words.length > 1) {
+      docs = await fetchBoth(`${words.slice(0, -1).join(' ')} `);
+      if (docs.length) note = ` (sin «${words[words.length - 1]}»)`;
+    }
     if (seq !== searchSeq) return; // llegó una búsqueda más reciente
-    $('search-status').textContent = docs.length
-      ? `${docs.length} resultados. Usa las flechas arriba y abajo y Enter para elegir.`
-      : 'Sin resultados';
-    showSuggestions(docs);
-  } catch {
-    if (seq === searchSeq) $('search-status').textContent = 'No se pudo buscar (¿sin conexión?). Puedes rellenar los campos a mano.';
+    const results = parseDocs(docs, text);
+    $('search-status').textContent = results.length
+      ? `${results.length} resultados${note}. Elige uno o usa tu título tal cual.`
+      : 'No hemos encontrado ese título. Puedes rellenar los campos a mano.';
+    showSuggestions(results, text.trim());
+  } catch (err) {
+    if (seq !== searchSeq) return;
+    $('search-status').textContent = err.name === 'AbortError'
+      ? 'La búsqueda tarda demasiado. Puedes seguir rellenando los campos a mano.'
+      : 'No se pudo buscar (¿sin conexión?). Puedes rellenar los campos a mano.';
+    setOpen(false);
   }
 }
 
-function showSuggestions(docs) {
+function showSuggestions(results, typed) {
   const ul = $('suggestions');
-  ul.replaceChildren(...docs.map((d, n) => {
+  const rows = results.map((r, n) => {
     const li = document.createElement('li');
     li.id = `sug-${n}`;
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', 'false');
-    const thumb = d.cover_i ? document.createElement('img') : document.createElement('div');
-    if (d.cover_i) {
-      thumb.src = coverUrl(d.cover_i, 'S');
+    const thumb = r.cover ? document.createElement('img') : document.createElement('div');
+    if (r.cover) {
+      thumb.src = coverUrl(r.cover, 'S');
       thumb.alt = ''; // decorativa: el título ya está en el texto de al lado
       thumb.width = 32; thumb.height = 48; // evita saltos de maquetación al cargar
     } else {
       thumb.className = 'noimg';
     }
     const txt = document.createElement('div');
-    txt.textContent = d.title;
+    txt.textContent = r.title;
     const small = document.createElement('small');
-    small.textContent = [d.author_name?.[0], d.first_publish_year].filter(Boolean).join(' · ');
+    small.textContent = [r.author, r.year].filter(Boolean).join(' · ');
     txt.append(small);
     li.append(thumb, txt);
-    li.onclick = () => pick(d);
+    li.onclick = () => pick(r);
     return li;
-  }));
-  setOpen(docs.length > 0);
+  });
+  if (rows.length) {
+    // Siempre hay una salida: si ninguno es el libro, se sigue con lo escrito y se rellena a mano
+    const none = document.createElement('li');
+    none.id = `sug-${rows.length}`;
+    none.className = 'use-typed';
+    none.setAttribute('role', 'option');
+    none.setAttribute('aria-selected', 'false');
+    const txt = document.createElement('div');
+    txt.textContent = `Usar «${typed}» tal cual`;
+    const small = document.createElement('small');
+    small.textContent = 'Ninguno de estos: relleno el resto a mano';
+    txt.append(small);
+    none.append(txt);
+    none.onclick = useTyped;
+    rows.push(none);
+  }
+  ul.replaceChildren(...rows);
+  setOpen(rows.length > 0);
+}
+function useTyped() {
+  setOpen(false);
+  $('search-status').textContent = '';
+  $('author').focus();
 }
 
 const coverUrl = (id, size) => `https://covers.openlibrary.org/b/id/${id}-${size}.jpg`;
 
-function pick(d) {
-  $('title').value = d.title;
-  if (d.cover_i) $('cover').value = coverUrl(d.cover_i, 'L');
-  if (d.author_name?.[0]) $('author').value = d.author_name[0];
-  if (!$('genre').value && d.subject?.[0]) $('genre').value = d.subject[0];
+function pick(r) {
+  // Si el resultado no se parece a lo escrito (p. ej. está en otro idioma), se conserva tu título y se rellena lo demás
+  const typed = $('title').value.trim();
+  const keepTyped = Math.max(overlap(typed, r.title), overlap(typed, `${r.title} ${r.author}`)) < 0.6; // también cuenta el autor: "patria aramburu" -> Patria
+  if (!keepTyped) $('title').value = r.title;
+  if (r.cover) $('cover').value = coverUrl(r.cover, 'L');
+  if (r.author) $('author').value = r.author;
+  if (!$('genre').value && r.genre) $('genre').value = r.genre;
   setOpen(false);
-  $('search-status').textContent = '';
+  $('search-status').textContent = keepTyped ? 'Se ha mantenido tu título; se han rellenado la portada y el autor.' : '';
   updatePreview();
 }
-
 // El filtro por lector se reconstruye con la lista actual y conserva la elección si sigue existiendo
 function refreshReaderOptions(preferred) {
   const select = $('f-reader');
