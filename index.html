@@ -177,6 +177,23 @@
       </div>
     </div>
 
+    <div class="form-two-columns">
+      <label class="form-field"><span>Autor</span><input id="author" autocomplete="off" maxlength="140" placeholder="Nombre del autor"></label>
+      <label class="form-field"><span>Género</span><input id="genre" list="genres" autocomplete="off" maxlength="80" placeholder="Ficción, ensayo…"></label>
+      <datalist id="genres"></datalist>
+    </div>
+
+    <label class="form-field">
+      <span>Procedencia</span>
+      <select id="origin">
+        <option value="">—</option>
+        <option>Casa</option>
+        <option>Biblioteca</option>
+        <option>Prestado</option>
+        <option>Otros</option>
+      </select>
+    </label>
+
     <fieldset class="readings-field">
       <legend><svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>Lecturas</legend>
       <p class="field-hint">Cada lector tiene su propia lectura del libro: fechas, puntuación y notas. Los lectores se crean y se gestionan en Opciones → Gestionar lectores.</p>
@@ -220,22 +237,6 @@
       </div>
     </fieldset>
 
-    <div class="form-two-columns">
-      <label class="form-field"><span>Autor</span><input id="author" autocomplete="off" maxlength="140" placeholder="Nombre del autor"></label>
-      <label class="form-field"><span>Género</span><input id="genre" list="genres" autocomplete="off" maxlength="80" placeholder="Ficción, ensayo…"></label>
-      <datalist id="genres"></datalist>
-    </div>
-
-    <label class="form-field">
-      <span>Procedencia</span>
-      <select id="origin">
-        <option value="">—</option>
-        <option>Casa</option>
-        <option>Biblioteca</option>
-        <option>Prestado</option>
-        <option>Otros</option>
-      </select>
-    </label>
     <div class="dialog-footer">
       <button type="button" id="btn-delete" class="danger-button" hidden><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg><span class="delete-label">Eliminar</span></button>
       <span class="spacer"></span>
