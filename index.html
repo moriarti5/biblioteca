@@ -47,6 +47,11 @@
     </div>
     <div class="page-actions">
       <button id="btn-new" class="primary-button add-book-button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Añadir libro</button>
+      <label class="profile-select" id="profile-wrap" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>
+        <select id="profile" aria-label="Lector: ver la biblioteca de"></select>
+        <svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+      </label>
       <details class="menu" id="menu">
         <summary>Opciones<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
         <div class="menu-panel">
@@ -108,12 +113,6 @@
             <option>Otros</option>
           </select>
         </label>
-        <label>Lector
-          <select id="f-reader">
-            <option value="">Todos</option>
-            <option value="__none__">Sin lector</option>
-          </select>
-        </label>
       </div>
       <div class="date-filter-fields">
         <label>Inicio desde <input type="date" id="f-start-from"></label>
@@ -139,7 +138,6 @@
             <option value="rating-asc">Puntuación (menor)</option>
             <option value="title-asc">Título (A-Z)</option>
             <option value="author-asc">Autor (A-Z)</option>
-            <option value="reader-asc">Lector (A-Z)</option>
           </select>
           <svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg>
         </span>
@@ -195,22 +193,8 @@
     </label>
 
     <fieldset class="readings-field">
-      <legend><svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>Lecturas</legend>
-      <p class="field-hint">Cada lector tiene su propia lectura del libro: fechas, puntuación y notas. Los lectores se crean y se gestionan en Opciones → Gestionar lectores.</p>
-      <div class="reading-tabs-row">
-        <div id="reading-tabs" class="reading-tabs" role="tablist" aria-label="Lecturas de este libro"></div>
-        <button type="button" id="add-reading" class="text-button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Añadir lectura</button>
-      </div>
-      <small id="reader-error" class="error" role="alert"></small>
-      <div id="reading-panel" class="reading-panel" role="tabpanel">
-        <div class="reader-row">
-          <label class="form-field"><span>Lector</span>
-            <select id="reading-reader" aria-describedby="readers-empty"></select>
-            <small id="readers-empty" class="field-hint" hidden>Todavía no hay lectores: créalos primero en Opciones → Gestionar lectores.</small>
-          </label>
-          <button type="button" id="remove-reading" class="text-button danger-text" hidden>Quitar esta lectura</button>
-        </div>
-
+      <legend><svg class="icon" aria-hidden="true"><use href="#i-users"/></svg><span id="reading-legend">Mi lectura</span></legend>
+      <div class="reading-panel">
         <div class="form-two-columns">
           <div class="date-field">
             <label class="form-field"><span><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg>Inicio de lectura</span><input id="start" type="date"></label>
@@ -256,10 +240,7 @@
   </div>
   <div class="dialog-body">
     <div id="stats-summary" class="summary"></div>
-    <label class="form-field" id="stats-reader-field" hidden>
-      <span>Lector</span>
-      <select id="stats-reader"></select>
-    </label>
+    <p id="stats-scope" class="field-hint" hidden></p>
     <label class="form-field">
       <span>Agrupar por</span>
       <select id="stats-group">

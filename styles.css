@@ -69,6 +69,12 @@ h1, h2, h3 { text-wrap: balance; }
 
 /* Menú "Opciones", junto a "Añadir libro" */
 .page-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+/* Selector de lector (perfil), junto a "Añadir libro": con uno elegido solo se ve y se añade su biblioteca */
+.profile-select { position: relative; display: inline-flex; align-items: center; min-height: 45px; border: 1px solid var(--control); border-radius: 8px; background: var(--card); color: var(--text-2); }
+.profile-select:hover, .profile-select:focus-within { border-color: var(--primary); color: var(--primary-ink); }
+.profile-select > .icon { position: absolute; left: 14px; pointer-events: none; }
+.profile-select > .icon:last-child { left: auto; right: 12px; width: 14px; height: 14px; }
+.profile-select select { appearance: none; max-width: 210px; min-height: 43px; border: 0; border-radius: 8px; padding: 0 34px 0 40px; background: transparent; color: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .menu { position: relative; }
 .menu > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; min-height: 45px; padding: 0 18px; border: 1px solid var(--control); border-radius: 8px; background: var(--card); color: var(--text-2); font-size: 13px; font-weight: 600; }
 .menu > summary::-webkit-details-marker { display: none; }
@@ -244,18 +250,10 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
 .rating-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; }
 .rating-options button { width: 34px; min-height: 31px; height: 31px; padding: 0; border: 1px solid var(--control); border-radius: 7px; background: var(--card); color: var(--text-2); font-size: 12px; cursor: pointer; }
 .rating-options button:hover { border-color: var(--primary); color: var(--primary-ink); }
-.rating-options button[aria-pressed="true"], .reading-tab[aria-selected="true"] { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-ink); font-weight: 700; }
-/* Lecturas: una pestaña por lector; el panel muestra fechas, puntuación y notas de la lectura activa */
+.rating-options button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-ink); font-weight: 700; }
+/* Lectura del lector del libro: fechas, puntuación y notas */
 .readings-field { display: grid; gap: 10px; }
-.reading-tabs-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
-.reading-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
-.reading-tab { min-height: 36px; padding: 0 14px; border: 1px solid var(--control); border-radius: 18px; background: var(--card); color: var(--text-2); font-size: 13px; cursor: pointer; }
-.reading-tab:hover { border-color: var(--primary); color: var(--primary-ink); }
 .reading-panel { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--bg) 55%, var(--card)); }
-.reader-row { display: flex; align-items: flex-end; gap: 12px; }
-.reader-row .form-field { flex: 1; min-width: 0; }
-.danger-text { color: var(--danger); }
-.reader-new { display: grid; gap: 6px; }
 .inline-add { display: flex; flex-direction: row; align-items: center; gap: 8px; }
 .inline-add input { flex: 1; min-width: 0; }
 .inline-add button { flex: none; }
@@ -308,10 +306,11 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
   .menu > summary, .primary-button, .secondary-button, .danger-button, .dialog-footer .primary-button, .dialog-footer .secondary-button, .dialog-close, .menu-panel button { min-height: 44px; }
   .dialog-close { width: 44px; height: 44px; }
   .menu > summary { display: inline-flex; align-items: center; }
+  .profile-select { min-height: 44px; }
+  .profile-select select { min-height: 42px; font-size: 16px; } /* 16px: iOS no hace zoom al enfocarlo */
   .search-field { height: 44px; }
   .search-field input { min-height: 0; } /* el objetivo táctil es todo el campo (la etiqueta), no solo el texto */
   .select-field select, .toolbar-button { height: 44px; }
-  .reading-tab { min-height: 44px; }
   .rating-options button { min-height: 44px; height: 44px; }
   .text-button { min-height: 44px; }
 }

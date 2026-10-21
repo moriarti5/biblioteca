@@ -2,6 +2,7 @@ const STORAGE_KEY = 'mis-lecturas-v1';
 const $ = (id) => document.getElementById(id);
 
 const BACKUP_KEY = 'mis-lecturas-v1-corrupto';
+const PREVIOUS_KEY = 'mis-lecturas-v1-formato-anterior'; // copia de lo guardado antes de pasar a un libro por lector
 
 let toastTimer = null;
 let books = [];
@@ -28,34 +29,35 @@ const hideToast = () => $('toast').replaceChildren();
 const dismissable = { label: 'Cerrar', run() {} };
 
 // ---------- Modelo ----------
-// Un libro guarda lo suyo (título, carátula, autor, género, procedencia) y una lista de lecturas:
-// una por lector, cada una con sus fechas, su puntuación y sus notas.
-//   { id, title, cover, author, genre, origin, readings: [{ reader, start, end, rating, notes }] }
-// reader '' = lectura sin nombre (la de quien usa la app sin lectores).
+// Un libro es la lectura de UN lector: guarda lo del libro (título, carátula, autor, género, procedencia) y lo de su
+// lector (fechas, puntuación, notas). Cada lector tiene su propia biblioteca: si dos lectores leen el mismo libro, son dos entradas.
+//   { id, title, cover, author, genre, origin, reader, start, end, rating, notes }
+// reader '' = sin lector (la de quien usa la app sin lectores).
 const normName = (s) => s.trim().replace(/\s+/g, ' ');
 const sameName = (a, b) => a.toLocaleLowerCase('es') === b.toLocaleLowerCase('es');
 const byName = (a, b) => a.localeCompare(b, 'es');
-const newReading = (reader = '') => ({ reader, start: '', end: '', rating: null, notes: '' });
 const ratingOrNull = (n) => (Number.isInteger(n) && n >= 1 && n <= 10 ? n : null);
+const hasData = (b) => Boolean(b.start || b.end || b.rating || b.notes);
 
-// Libros guardados antes de las lecturas tenían start/end/rating/notes/readers en el propio libro.
-// Se convierten a una lectura por cada lector que tenía el libro (con los mismos datos), o a una lectura sin nombre.
-// Es idempotente: sobre un libro ya convertido no cambia nada.
-function migrateBook(b) {
-  if (!Array.isArray(b.readings)) {
-    const names = (Array.isArray(b.readers) ? b.readers : []).filter((r) => typeof r === 'string' && normName(r));
-    const base = { start: b.start || '', end: b.end || '', rating: ratingOrNull(b.rating), notes: String(b.notes ?? '') };
-    b.readings = (names.length ? names : ['']).map((reader) => ({ reader, ...base }));
-  }
-  for (const k of ['readers', 'start', 'end', 'rating', 'notes']) delete b[k];
-  b.readings = b.readings
-    .filter((r) => r && typeof r === 'object')
-    .map((r) => ({
-      reader: typeof r.reader === 'string' ? normName(r.reader) : '',
-      start: r.start || '', end: r.end || '', rating: ratingOrNull(r.rating), notes: String(r.notes ?? ''),
-    }));
-  if (!b.readings.length) b.readings = [newReading()];
-  return b;
+// Formatos anteriores: v1 (start/end/rating/notes/readers en el propio libro) y v2 (readings: [{ reader, start, end, rating, notes }]).
+// Un libro con varios lectores pasa a ser una entrada por lector (con sus datos); en el formato actual devuelve el mismo libro limpio.
+// Es idempotente.
+const readingData = (r) => ({
+  reader: typeof r.reader === 'string' ? normName(r.reader) : '',
+  start: r.start || '', end: r.end || '', rating: ratingOrNull(r.rating), notes: String(r.notes ?? ''),
+});
+function migrateEntry(b) {
+  let readings;
+  if (Array.isArray(b.readings)) readings = b.readings.filter((r) => r && typeof r === 'object').map(readingData);
+  else if (Array.isArray(b.readers)) {
+    const names = b.readers.filter((r) => typeof r === 'string' && normName(r));
+    readings = (names.length ? names : ['']).map((reader) => readingData({ ...b, reader }));
+  } else readings = [readingData(b)];
+  // Una lectura sin nombre y sin datos junto a otras con lector sobra
+  if (readings.some((r) => r.reader)) readings = readings.filter((r) => r.reader || hasData(r));
+  if (!readings.length) readings = [readingData({})];
+  const base = { title: String(b.title ?? ''), cover: String(b.cover ?? ''), author: String(b.author ?? ''), genre: String(b.genre ?? ''), origin: String(b.origin ?? '') };
+  return readings.map((r, i) => ({ id: (i === 0 && b.id) || crypto.randomUUID(), ...base, ...r }));
 }
 
 // ---------- Almacenamiento ----------
@@ -82,21 +84,26 @@ function save() {
     return false;
   }
 }
-books = load().map(migrateBook);
+const stored = load();
+books = stored.flatMap(migrateEntry);
+// Los datos guardados en un formato anterior (sin "reader" en el libro) se reescriben en el actual;
+// antes se guarda aparte una copia de lo que había, por si hiciera falta.
+if (stored.some((b) => !('reader' in b))) {
+  try { if (localStorage.getItem(PREVIOUS_KEY) === null) localStorage.setItem(PREVIOUS_KEY, localStorage.getItem(STORAGE_KEY)); } catch {}
+  save();
+}
 
 // ---------- Lectores ----------
-// La lista de lectores se guarda aparte (así un lector puede existir sin libros); las lecturas citan su nombre.
+// La lista de lectores se guarda aparte (así un lector puede existir sin libros); los libros citan su nombre.
 const READERS_KEY = 'mis-lecturas-lectores';
 let readers = [];
 const sortReaders = () => readers.sort(byName);
-// Nombres de los lectores de un libro, en orden alfabético (las lecturas sin nombre no cuentan)
-const readersOf = (b) => b.readings.map((r) => r.reader).filter(Boolean).sort(byName);
 function loadReaders() {
   try {
     const data = JSON.parse(localStorage.getItem(READERS_KEY));
     if (Array.isArray(data)) return data.filter((r) => typeof r === 'string' && normName(r));
   } catch {}
-  return []; // si no se puede leer, la lista se reconstruye con los nombres que figuran en las lecturas
+  return []; // si no se puede leer, la lista se reconstruye con los nombres que figuran en los libros
 }
 function saveReaders() {
   try {
@@ -107,26 +114,18 @@ function saveReaders() {
     return false;
   }
 }
-// Las lecturas mandan: un nombre que una lectura cita y no está en la lista (p. ej. importado) se añade,
-// las mayúsculas distintas se unifican con la de la lista, un lector solo tiene una lectura por libro
-// y un libro siempre tiene al menos una lectura.
+// Los libros mandan: un nombre que un libro cita y no está en la lista (p. ej. importado) se añade,
+// y las mayúsculas distintas se unifican con la de la lista.
 function syncReaders() {
   let changed = false;
   for (const b of books) {
-    const seen = new Set();
-    b.readings = b.readings.filter((rd) => {
-      let name = rd.reader ? normName(rd.reader) : '';
-      if (name) {
-        let r = readers.find((x) => sameName(x, name));
-        if (!r) { r = name; readers.push(r); changed = true; }
-        name = r;
-      }
-      rd.reader = name;
-      if (seen.has(name)) return false;
-      seen.add(name);
-      return true;
-    });
-    if (!b.readings.length) b.readings = [newReading()];
+    let name = b.reader ? normName(b.reader) : '';
+    if (name) {
+      let r = readers.find((x) => sameName(x, name));
+      if (!r) { r = name; readers.push(r); changed = true; }
+      name = r;
+    }
+    b.reader = name;
   }
   sortReaders();
   return changed;
@@ -134,28 +133,16 @@ function syncReaders() {
 readers = loadReaders();
 if (syncReaders()) saveReaders();
 
-// Primer lector por orden alfabético: es el que ordena el libro; sin lectores, al final
-const firstReader = (b) => readersOf(b)[0];
+// ---------- Perfil ----------
+// El lector elegido junto a "Añadir libro": con él solo se ve (y se añade) lo suyo. '' = todos los lectores.
+const PROFILE_KEY = 'mis-lecturas-perfil';
+let profile = '';
+try { const p = localStorage.getItem(PROFILE_KEY); if (p && readers.includes(p)) profile = p; } catch {}
+// Los libros del perfil activo; sin perfil, todos
+const scoped = () => (profile ? books.filter((b) => b.reader === profile) : books);
 
-// ---------- Vistas de un libro ----------
-// Con un lector elegido en el filtro, el libro se ve con SU lectura; sin filtro, con todas (puntuación media, fechas más recientes).
-let viewReader = ''; // '' = todos, '__none__' = sin lector, o un nombre
-const viewOf = (b) => {
-  if (viewReader === '__none__') return b.readings.filter((r) => !r.reader);
-  if (viewReader) return b.readings.filter((r) => r.reader === viewReader);
-  return b.readings;
-};
 // En curso: con fecha de inicio y sin fecha de fin
-const rInProgress = (r) => Boolean(r.start && !r.end);
-const inProgress = (b) => viewOf(b).some(rInProgress);
-const latest = (list, key) => list.map((r) => r[key]).filter(Boolean).sort().pop() || '';
-const startOf = (b) => latest(viewOf(b), 'start');
-const endOf = (b) => latest(viewOf(b), 'end');
-const mean = (nums) => (nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : null);
-const ratingOf = (b) => mean(viewOf(b).map((r) => r.rating).filter(Boolean));
-// Lectura que representa al libro en la tarjeta: la que está en curso (la empezada más recientemente) o la terminada más reciente
-const mainReading = (rs) => rs.filter(rInProgress).sort((x, y) => y.start.localeCompare(x.start))[0]
-  || [...rs].sort((x, y) => (y.end || '').localeCompare(x.end || ''))[0] || rs[0] || newReading();
+const inProgress = (b) => Boolean(b.start && !b.end);
 
 // ---------- Listado ----------
 // Los libros sin esa fecha quedan siempre al final, también en orden descendente
@@ -164,6 +151,8 @@ const byDate = (get, dir) => (a, b) => {
   if (!x || !y) return !x - !y;
   return dir * (x < y ? -1 : x > y ? 1 : 0);
 };
+const startOf = (b) => b.start;
+const endOf = (b) => b.end;
 // Por fecha de fin, los libros en curso van primero (el empezado más recientemente delante)
 const byEnd = (dir) => (a, b) => {
   if (inProgress(a) !== inProgress(b)) return inProgress(a) ? -1 : 1;
@@ -175,48 +164,41 @@ const sorters = {
   'end-asc': byEnd(1),
   'start-desc': byDate(startOf, -1),
   'start-asc': byDate(startOf, 1),
-  'rating-desc': (a, b) => (ratingOf(b) ?? -1) - (ratingOf(a) ?? -1),
-  'rating-asc': (a, b) => (ratingOf(a) ?? 99) - (ratingOf(b) ?? 99),
+  'rating-desc': (a, b) => (b.rating ?? -1) - (a.rating ?? -1),
+  'rating-asc': (a, b) => (a.rating ?? 99) - (b.rating ?? 99),
   'title-asc': (a, b) => a.title.localeCompare(b.title, 'es'),
   'author-asc': (a, b) => (a.author || '').localeCompare(b.author || '', 'es'),
-  'reader-asc': (a, b) => {
-    const x = firstReader(a), y = firstReader(b);
-    if (!x || !y) return !x - !y;
-    return x.localeCompare(y, 'es');
-  },
 };
 function filtered() {
-  viewReader = $('f-reader').value;
   const text = $('f-text').value.trim().toLowerCase();
   const sf = $('f-start-from').value, st = $('f-start-to').value;
   const ef = $('f-end-from').value, et = $('f-end-to').value;
   const inRange = (d, from, to) => (!from && !to) || (d && (!from || d >= from) && (!to || d <= to));
   const origin = $('f-origin').value;
   const status = $('f-status').value; // '' | reading | finished
-  return books
-    .filter((b) => !status || (status === 'reading' ? inProgress(b) : viewOf(b).some((r) => r.end)))
+  return scoped()
+    .filter((b) => !status || (status === 'reading' ? inProgress(b) : Boolean(b.end)))
     .filter((b) => !origin || b.origin === origin)
-    .filter((b) => !viewReader || (viewReader === '__none__' ? !readersOf(b).length : readersOf(b).includes(viewReader)))
-    .filter((b) => !text || [b.title, b.author, b.genre, ...b.readings.map((r) => r.notes), ...readersOf(b)].some((v) => (v || '').toLowerCase().includes(text)))
-    .filter((b) => viewOf(b).some((r) => inRange(r.start, sf, st) && inRange(r.end, ef, et)))
+    .filter((b) => !text || [b.title, b.author, b.genre, b.notes, b.reader].some((v) => (v || '').toLowerCase().includes(text)))
+    .filter((b) => inRange(b.start, sf, st) && inRange(b.end, ef, et))
     .sort(sorters[$('f-sort').value]);
 }
 
 function render() {
   const list = filtered();
+  const mine = scoped();
   // Con el panel cerrado, el número del botón "Filtros" avisa de cuántos filtros del panel hay activos
-  const panelFilters = ['f-origin', 'f-reader', 'f-start-from', 'f-start-to', 'f-end-from', 'f-end-to'].filter((id) => $(id).value).length;
+  const panelFilters = ['f-origin', 'f-start-from', 'f-start-to', 'f-end-from', 'f-end-to'].filter((id) => $(id).value).length;
   $('dates-count').textContent = panelFilters ? ` (${panelFilters})` : '';
   $('btn-clear').hidden = !(panelFilters || $('f-text').value.trim() || $('f-status').value);
   const n = list.length;
   $('count-n').textContent = n;
-  $('count-rest').textContent = ` ${n === 1 ? 'libro' : 'libros'}${books.length !== n ? ` de ${books.length}` : ''}`;
-  // Resumen de la página: siempre sobre todas las lecturas, no sobre los filtros
-  const all = books.flatMap((b) => b.readings);
-  $('st-total').textContent = books.length;
-  $('st-reading').textContent = books.filter((b) => b.readings.some(rInProgress)).length;
-  $('st-finished').textContent = books.filter((b) => b.readings.some((r) => r.end)).length;
-  $('st-avg').textContent = avg(all.map((r) => r.rating).filter(Boolean));
+  $('count-rest').textContent = ` ${n === 1 ? 'libro' : 'libros'}${mine.length !== n ? ` de ${mine.length}` : ''}`;
+  // Resumen de la página: siempre sobre los libros del perfil, no sobre los filtros
+  $('st-total').textContent = mine.length;
+  $('st-reading').textContent = mine.filter(inProgress).length;
+  $('st-finished').textContent = mine.filter((b) => b.end).length;
+  $('st-avg').textContent = avg(mine.map((b) => b.rating).filter(Boolean));
   $('list').replaceChildren(...(list.length ? list.map(card) : [emptyState()]));
   $('genres').replaceChildren(...[...new Set(books.map((b) => b.genre).filter(Boolean))].map((g) => {
     const o = document.createElement('option'); o.value = g; return o;
@@ -244,7 +226,7 @@ function icon(name) {
 
 // Estado vacío: invitación a añadir el primer libro, o salida cuando los filtros no encuentran nada
 function emptyState() {
-  const first = books.length === 0;
+  const first = scoped().length === 0;
   const box = el('div', first ? 'empty-state' : 'empty-state compact-empty');
   const iconBox = el('span', 'empty-state-icon');
   iconBox.append(icon(first ? 'book-open' : 'search'));
@@ -308,9 +290,8 @@ const fmtRating = (n) => (Number.isInteger(n) ? String(n) : n.toLocaleString('es
 function card(b) {
   const article = el('article', 'book');
   article.dataset.id = b.id;
-  const rs = viewOf(b);
-  const main = mainReading(rs);
-  const multi = b.readings.length > 1;
+  // Sin perfil elegido se ven los libros de todos: la tarjeta dice de quién es cada uno
+  const owner = !profile && b.reader ? b.reader : '';
 
   const wrap = el('div', 'book-cover-wrap');
   wrap.append(coverNode(b));
@@ -319,11 +300,9 @@ function card(b) {
     pill.append(el('span', 'reading-dot'), 'En curso');
     wrap.append(pill);
   }
-  const rating = ratingOf(b);
-  if (rating !== null) {
+  if (b.rating) {
     const pill = el('span', 'rating-pill');
-    const several = rs.filter((r) => r.rating).length > 1;
-    pill.append(icon('star-fill'), el('span', 'sr', several ? 'Puntuación media ' : 'Puntuación '), fmtRating(rating), el('span', 'sr', ' de 10'));
+    pill.append(icon('star-fill'), el('span', 'sr', 'Puntuación '), fmtRating(b.rating), el('span', 'sr', ' de 10'));
     wrap.append(pill);
   }
 
@@ -340,26 +319,22 @@ function card(b) {
   line.append(h);
   copy.append(line, el('p', 'book-author', b.author || 'Autor por añadir'),
     el('p', 'book-genre', `${b.genre || 'Sin género'}${b.origin ? ` · ${b.origin}` : ''}`));
-  if (readersOf(b).length) copy.append(el('p', 'readers', `Leído por ${readersOf(b).join(', ')}`));
+  if (owner) copy.append(el('p', 'readers', `Leído por ${owner}`));
 
   const dates = el('div', 'book-dates');
-  const s = fmt(main.start), e = fmt(main.end);
-  const range = !s && !e ? 'Sin fechas' : `${s || 'Inicio sin fecha'} — ${e || 'En curso'}`;
-  dates.append(icon('calendar'), el('span', '', multi ? `${range} · ${b.readings.length} lecturas` : range));
+  const s = fmt(b.start), e = fmt(b.end);
+  dates.append(icon('calendar'), el('span', '', !s && !e ? 'Sin fechas' : `${s || 'Inicio sin fecha'} — ${e || 'En curso'}`));
   copy.append(dates);
 
-  // Un "Terminé" por cada lectura en curso (con el nombre si hay varias)
-  const pending = rs.filter(rInProgress);
-  for (const rd of pending) {
-    const who = pending.length > 1 ? (rd.reader || 'sin nombre') : '';
+  if (inProgress(b)) {
     const finish = el('button', 'finish');
     finish.type = 'button';
-    finish.append(icon('check'), who ? `Terminé (${who})` : 'Terminé');
-    finish.setAttribute('aria-label', `Terminé «${b.title}»${who ? ` (${who})` : ''}`);
-    finish.onclick = () => openDialog(b, b.readings.indexOf(rd));
+    finish.append(icon('check'), 'Terminé');
+    finish.setAttribute('aria-label', `Terminé «${b.title}»${owner ? ` (${owner})` : ''}`);
+    finish.onclick = () => openDialog(b, true);
     copy.append(finish);
   }
-  if (main.notes) copy.append(el('p', 'book-note', `“${main.notes}”${multi && main.reader ? ` — ${main.reader}` : ''}`));
+  if (b.notes) copy.append(el('p', 'book-note', `“${b.notes}”`));
 
   article.append(wrap, copy);
   return article;
@@ -367,111 +342,43 @@ function card(b) {
 const fmt = (d) => (d ? d.split('-').reverse().join('/') : '');
 
 // ---------- Diálogo del libro ----------
-// El formulario trabaja con una copia (draft) de las lecturas del libro; los campos de fechas, puntuación y notas
-// muestran la lectura activa (pestaña). Al cambiar de pestaña o guardar, lo escrito vuelve a su lectura.
-let draft = [];
-let activeReading = 0;
-const readingFromInputs = () => {
-  const rating = parseInt($('rating').value, 10);
-  return { reader: $('reading-reader').value, start: $('start').value, end: $('end').value, rating: ratingOrNull(rating), notes: $('notes').value.trim() };
-};
-const commitActive = () => { if (draft[activeReading]) draft[activeReading] = readingFromInputs(); };
-// No se puede salir de una lectura con las fechas al revés
-const guardActive = () => {
-  if ($('end').checkValidity()) return true;
-  $('end').reportValidity();
-  return false;
-};
+// Edita lo del libro y la lectura de su lector (fechas, puntuación y notas). El lector no se elige aquí: es el perfil
+// activo al añadir, o el dueño del libro al editarlo.
+let dialogReader = '';
+const readingLabel = (reader) => (reader ? `Lectura de ${reader}` : 'Mi lectura');
 
-function fillReaderSelect() {
-  const used = new Set(draft.map((r, i) => (i === activeReading ? null : r.reader)));
-  const select = $('reading-reader');
-  select.replaceChildren(new Option('Sin nombre', ''), ...readers.map((n) => new Option(n, n)));
-  for (const o of select.options) o.disabled = used.has(o.value); // un lector solo tiene una lectura por libro
-  select.value = draft[activeReading].reader;
-  $('readers-empty').hidden = readers.length > 0;
-}
-function renderTabs() {
-  $('reading-tabs').replaceChildren(...draft.map((r, i) => {
-    const tab = el('button', 'reading-tab', r.reader || (draft.length === 1 && !readers.length ? 'Mi lectura' : 'Sin nombre'));
-    tab.type = 'button';
-    tab.id = `rtab-${i}`;
-    tab.setAttribute('role', 'tab');
-    tab.setAttribute('aria-selected', String(i === activeReading));
-    tab.tabIndex = i === activeReading ? 0 : -1;
-    tab.onclick = () => switchReading(i);
-    return tab;
-  }));
-  $('reading-panel').setAttribute('aria-labelledby', `rtab-${activeReading}`);
-  $('remove-reading').hidden = draft.length < 2;
-}
-function showReading(i) {
-  activeReading = i;
-  const r = draft[i];
-  fillReaderSelect();
-  $('start').value = r.start;
-  $('end').value = r.end;
-  $('rating').value = r.rating ?? '';
-  $('notes').value = r.notes;
-  syncRating();
-  checkDates();
-  renderTabs();
-}
-function switchReading(i, focusTab = false) {
-  if (i === activeReading || !guardActive()) return;
-  commitActive();
-  showReading(i);
-  if (focusTab) $(`rtab-${i}`).focus();
-}
-$('reading-tabs').addEventListener('keydown', (e) => {
-  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-  e.preventDefault();
-  switchReading((activeReading + (e.key === 'ArrowRight' ? 1 : -1) + draft.length) % draft.length, true);
-});
-$('reading-reader').addEventListener('change', () => { commitActive(); showReading(activeReading); });
-$('add-reading').onclick = () => {
-  if (!guardActive()) return;
-  commitActive();
-  const used = new Set(draft.map((r) => r.reader));
-  const next = readers.find((n) => !used.has(n)) ?? (used.has('') ? undefined : '');
-  if (next === undefined) {
-    $('reader-error').textContent = 'Ya hay una lectura de cada lector. Para añadir otra, crea un lector nuevo en Opciones → Gestionar lectores.';
+// finishing: viene del botón "Terminé"; pone la fecha de fin de hoy y deja la puntuación a mano. No guarda hasta pulsar Guardar.
+function openDialog(b, finishing = false) {
+  if (!b && readers.length && !profile) {
+    // Sin lector elegido no se sabe en cuya biblioteca va el libro
+    showToast('Elige primero un lector junto a «Añadir libro»: cada libro se guarda en la biblioteca de un lector.');
+    $('profile').focus();
     return;
   }
-  $('reader-error').textContent = '';
-  draft.push(newReading(next));
-  showReading(draft.length - 1);
-  $('reading-reader').focus();
-};
-$('remove-reading').onclick = () => {
-  draft.splice(activeReading, 1);
-  showReading(Math.max(0, activeReading - 1));
-};
-
-// finishing: viene del botón "Terminé" (true = la primera lectura en curso, o el índice de la lectura); pone la fecha de fin de hoy
-// y deja la puntuación a mano. No guarda hasta pulsar Guardar.
-function openDialog(b, finishing = false) {
   editingId = b ? b.id : null;
-  draft = b ? b.readings.map((r) => ({ ...r })) : [newReading()];
-  const idx = finishing === false ? 0
-    : typeof finishing === 'number' ? finishing : Math.max(0, draft.findIndex(rInProgress));
+  dialogReader = b ? b.reader : profile;
   // Al terminar, el diálogo se desplaza hasta la puntuación: el nombre del libro va en el encabezado, que también lee el lector de pantalla
-  const who = finishing !== false && draft.length > 1 ? ` · ${draft[idx].reader || 'sin nombre'}` : '';
-  $('dlg-title').textContent = finishing !== false ? `Terminar «${b.title}»${who}` : b ? 'Editar libro' : 'Añadir libro';
+  const who = finishing && b.reader && !profile ? ` · ${b.reader}` : '';
+  $('dlg-title').textContent = finishing ? `Terminar «${b.title}»${who}` : b ? 'Editar libro' : 'Añadir libro';
+  $('reading-legend').textContent = readingLabel(dialogReader);
   $('title').value = b?.title || '';
   $('cover').value = b?.cover || '';
   $('author').value = b?.author || '';
   $('genre').value = b?.genre || '';
   $('origin').value = b?.origin || '';
-  $('reader-error').textContent = '';
-  showReading(idx);
+  $('start').value = b?.start || '';
+  $('end').value = b?.end || '';
+  $('rating').value = b?.rating ?? '';
+  $('notes').value = b?.notes || '';
+  syncRating();
+  checkDates();
   $('btn-delete').hidden = !b;
   setOpen(false);
   $('search-status').textContent = '';
   setCoverField(Boolean(b?.cover)); // el campo de la URL solo se muestra si ya hay carátula o se pide
   updatePreview();
   $('dlg').showModal();
-  if (finishing !== false) {
+  if (finishing) {
     $('end').value = today();
     checkDates();
     pills.firstElementChild.scrollIntoView({ block: 'center' });
@@ -488,10 +395,7 @@ function openDialog(b, finishing = false) {
 
 // Cambios sin guardar: Cancelar y Esc preguntan antes de descartarlos
 let initialState = '';
-const formState = () => JSON.stringify([
-  ...['title', 'cover', 'author', 'genre', 'origin'].map((id) => $(id).value),
-  draft.map((r, i) => (i === activeReading ? readingFromInputs() : r)),
-]);
+const formState = () => JSON.stringify(['title', 'cover', 'author', 'genre', 'origin', 'start', 'end', 'rating', 'notes'].map((id) => $(id).value));
 const isDirty = () => $('dlg').open && formState() !== initialState;
 const confirmDiscard = () => !isDirty() || confirm('Hay cambios sin guardar. ¿Descartarlos?');
 
@@ -516,32 +420,26 @@ function setCoverField(open) {
 }
 $('cover-toggle').onclick = () => setCoverField($('cover-field').hidden);
 
-$('form').addEventListener('submit', (e) => {
-  commitActive();
-  // El navegador solo valida la pestaña visible: si otra tiene las fechas al revés, se va a ella y no se guarda
-  const bad = draft.findIndex((r) => r.start && r.end && r.end < r.start);
-  if (bad >= 0) {
-    e.preventDefault();
-    showReading(bad);
-    $('end').reportValidity();
-    return;
-  }
+$('form').addEventListener('submit', () => {
   const data = {
     title: $('title').value.trim(),
     cover: $('cover').value.trim(),
     author: $('author').value.trim(),
     genre: $('genre').value.trim(),
     origin: $('origin').value,
-    readings: draft.map((r) => ({ ...r })),
+    reader: dialogReader,
+    start: $('start').value,
+    end: $('end').value,
+    rating: ratingOrNull(parseInt($('rating').value, 10)),
+    notes: $('notes').value.trim(),
   };
   const editing = Boolean(editingId);
   const id = editingId || crypto.randomUUID();
   const prev = editing ? books.find((b) => b.id === id) : null;
-  // "Terminado": alguna lectura que estaba en curso ahora tiene fecha de fin
-  const finished = Boolean(prev && prev.readings.some((r) => rInProgress(r) && data.readings.some((d) => d.reader === r.reader && d.end)));
+  // "Terminado": estaba en curso y ahora tiene fecha de fin
+  const finished = Boolean(prev && inProgress(prev) && data.end);
   if (editing) books = books.map((b) => (b.id === id ? { ...b, ...data } : b));
   else books.push({ id, ...data });
-  syncReaders();
   const saved = save();
   render();
   if (saved) announceSaved(id, data.title, editing, finished);
@@ -810,13 +708,22 @@ function pick(r) {
   $('search-status').textContent = keepTyped ? 'Se ha mantenido tu título; se han rellenado la portada y el autor.' : '';
   updatePreview();
 }
-// El filtro por lector se reconstruye con la lista actual y conserva la elección si sigue existiendo
-function refreshReaderOptions(preferred) {
-  const select = $('f-reader');
-  const current = preferred ?? select.value;
-  select.replaceChildren(new Option('Todos', ''), new Option('Sin lector', '__none__'), ...readers.map((r) => new Option(r, r)));
-  select.value = [...select.options].some((o) => o.value === current) ? current : '';
+// El selector de lector (junto a "Añadir libro") se reconstruye con la lista actual y conserva la elección si sigue existiendo;
+// sin lectores no se muestra
+function refreshProfileOptions(preferred) {
+  const select = $('profile');
+  const current = preferred ?? profile;
+  select.replaceChildren(new Option('Todos los lectores', ''), ...readers.map((r) => new Option(r, r)));
+  profile = readers.includes(current) ? current : '';
+  select.value = profile;
+  $('profile-wrap').hidden = !readers.length;
+  try { localStorage.setItem(PROFILE_KEY, profile); } catch {}
 }
+$('profile').addEventListener('change', () => {
+  profile = $('profile').value;
+  try { localStorage.setItem(PROFILE_KEY, profile); } catch {}
+  render();
+});
 
 // ---------- Lectores: gestión ----------
 function readersMsg(text, action) {
@@ -840,7 +747,7 @@ function renderReadersList() {
     input.spellcheck = false;
     input.setAttribute('aria-label', `Nombre del lector ${r}`);
     input.onchange = () => renameReader(r, input.value);
-    const n = books.filter((b) => readersOf(b).includes(r)).length;
+    const n = books.filter((b) => b.reader === r).length;
     const count = document.createElement('span');
     count.className = 'muted count';
     count.textContent = `${n} ${n === 1 ? 'libro' : 'libros'}`;
@@ -855,10 +762,10 @@ function renderReadersList() {
   }));
   $('readers-none').hidden = readers.length > 0;
 }
-function afterReadersChange(preferredFilter) {
+function afterReadersChange(preferredProfile) {
   saveReaders();
   save();
-  refreshReaderOptions(preferredFilter);
+  refreshProfileOptions(preferredProfile);
   render();
   renderReadersList();
 }
@@ -868,36 +775,28 @@ function renameReader(old, raw) {
   const clash = readers.find((r) => r !== old && sameName(r, name));
   if (clash) { readersMsg(`Ya existe un lector llamado «${clash}».`); renderReadersList(); return; }
   if (name === old) { renderReadersList(); return; }
-  const filterWasOld = $('f-reader').value === old;
+  const profileWasOld = profile === old;
   readers[readers.indexOf(old)] = name;
   sortReaders();
-  for (const b of books) for (const rd of b.readings) if (rd.reader === old) rd.reader = name;
-  afterReadersChange(filterWasOld ? name : undefined);
+  for (const b of books) if (b.reader === old) b.reader = name;
+  afterReadersChange(profileWasOld ? name : undefined);
   readersMsg(`«${old}» ahora se llama «${name}».`);
 }
-// Eliminar a un lector borra sus lecturas (fechas, puntuación y notas): se pide confirmación si tienen datos y se puede deshacer
+// Cada lector tiene su propia biblioteca: eliminarlo borra sus libros (con sus fechas, puntuación y notas).
+// Se pide confirmación si los tiene y se puede deshacer.
 function deleteReader(name) {
-  const removed = []; // { id, index, reading }
-  for (const b of books) b.readings.forEach((rd, index) => { if (rd.reader === name) removed.push({ id: b.id, index, reading: rd }); });
-  const withData = removed.filter(({ reading: r }) => r.start || r.end || r.rating || r.notes).length;
-  if (withData && !confirm(`«${name}» tiene ${withData} ${withData === 1 ? 'lectura' : 'lecturas'} con fechas, puntuación o notas. Si lo eliminas, se borran también. ¿Eliminar a «${name}»?`)) return;
-  const placeholders = []; // libros que se quedaron sin lecturas y recibieron una vacía
-  for (const b of books) {
-    b.readings = b.readings.filter((rd) => rd.reader !== name);
-    if (!b.readings.length) { b.readings = [newReading()]; placeholders.push(b.id); }
-  }
+  const removed = []; // { book, index }, de menor a mayor índice
+  books.forEach((book, index) => { if (book.reader === name) removed.push({ book, index }); });
+  const n = removed.length;
+  if (n && !confirm(`«${name}» tiene ${n} ${n === 1 ? 'libro' : 'libros'} en su biblioteca. Si lo eliminas, se borran también. ¿Eliminar a «${name}»?`)) return;
+  books = books.filter((b) => b.reader !== name);
   readers.splice(readers.indexOf(name), 1);
-  afterReadersChange();
-  const n = new Set(removed.map((x) => x.id)).size;
-  readersMsg(`«${name}» eliminado${n ? ` y quitado de ${n} ${n === 1 ? 'libro' : 'libros'}` : ''}.`, {
+  afterReadersChange(); // si era el perfil activo, vuelve a «Todos los lectores»
+  readersMsg(`«${name}» eliminado${n ? ` junto con ${n} ${n === 1 ? 'libro' : 'libros'}` : ''}.`, {
     label: 'Deshacer',
     run() {
       if (!readers.some((r) => sameName(r, name))) { readers.push(name); sortReaders(); }
-      for (const id of placeholders) { const b = books.find((x) => x.id === id); if (b) b.readings = b.readings.filter((r) => r.reader || r.start || r.end || r.rating || r.notes); }
-      for (const { id, index, reading } of removed) {
-        const b = books.find((x) => x.id === id);
-        if (b && !b.readings.some((r) => r.reader === name)) b.readings.splice(Math.min(index, b.readings.length), 0, reading);
-      }
+      for (const { book, index } of removed) books.splice(Math.min(index, books.length), 0, book);
       afterReadersChange();
       readersMsg(`«${name}» restaurado.`);
     },
@@ -912,7 +811,7 @@ $('reader-form').addEventListener('submit', (e) => {
   readers.push(name);
   sortReaders();
   saveReaders();
-  refreshReaderOptions();
+  refreshProfileOptions();
   $('reader-new').value = '';
   renderReadersList();
   readersMsg(`«${name}» añadido.`);
@@ -938,11 +837,10 @@ const avg = (nums) => (nums.length
   ? (nums.reduce((s, n) => s + n, 0) / nums.length).toLocaleString('es', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
   : '–');
 
-// Las estadísticas cuentan lecturas (no libros): si dos personas leen el mismo libro son dos lecturas
+// Las estadísticas cuentan las entradas del perfil activo (todas si no hay perfil): si dos lectores leen el mismo libro son dos lecturas
 function renderStats() {
   const group = $('stats-group').value;
-  const reader = $('stats-reader').value; // '' = todos los lectores
-  const readings = books.flatMap((b) => b.readings).filter((r) => !reader || r.reader === reader);
+  const readings = scoped();
   const read = readings.filter((r) => r.end);
   const rated = readings.filter((r) => r.rating);
 
@@ -954,9 +852,9 @@ function renderStats() {
     return d;
   };
   $('stats-summary').replaceChildren(
-    stat(read.length, readers.length ? 'lecturas terminadas' : 'libros leídos'),
+    stat(read.length, profile || !readers.length ? 'libros leídos' : 'lecturas terminadas'),
     stat(avg(rated.map((r) => r.rating)), 'puntuación media'),
-    stat(readings.filter(rInProgress).length, 'en curso'),
+    stat(readings.filter(inProgress).length, 'en curso'),
   );
 
   const groups = new Map();
@@ -991,17 +889,13 @@ function renderStats() {
   $('stats-table').tBodies[0].replaceChildren(...rows);
 }
 $('btn-stats').onclick = () => {
-  const select = $('stats-reader');
-  const current = select.value;
-  select.replaceChildren(new Option('Todos los lectores', ''), ...readers.map((r) => new Option(r, r)));
-  select.value = readers.includes(current) ? current : '';
-  $('stats-reader-field').hidden = !readers.length;
+  $('stats-scope').hidden = !profile;
+  $('stats-scope').textContent = profile ? `Biblioteca de ${profile}.` : '';
   renderStats();
   $('dlg-stats').showModal();
 };
 $('btn-stats-close').onclick = () => $('dlg-stats').close();
 $('stats-group').addEventListener('input', renderStats);
-$('stats-reader').addEventListener('input', renderStats);
 
 // ---------- Tema claro / oscuro ----------
 const prefersDark = matchMedia('(prefers-color-scheme: dark)');
@@ -1021,21 +915,21 @@ prefersDark.addEventListener('change', updateThemeButton);
 updateThemeButton();
 
 // ---------- Filtros, exportar / importar ----------
-['f-text', 'f-sort', 'f-status', 'f-origin', 'f-reader', 'f-start-from', 'f-start-to', 'f-end-from', 'f-end-to'].forEach((id) => $(id).addEventListener('input', render));
+['f-text', 'f-sort', 'f-status', 'f-origin', 'f-start-from', 'f-start-to', 'f-end-from', 'f-end-to'].forEach((id) => $(id).addEventListener('input', render));
 $('btn-filters').onclick = () => {
   const open = $('filters-panel').hidden;
   $('filters-panel').hidden = !open;
   $('btn-filters').setAttribute('aria-expanded', String(open));
 };
 $('btn-clear').onclick = () => {
-  ['f-text', 'f-status', 'f-origin', 'f-reader', 'f-start-from', 'f-start-to', 'f-end-from', 'f-end-to'].forEach((id) => ($(id).value = ''));
+  ['f-text', 'f-status', 'f-origin', 'f-start-from', 'f-start-to', 'f-end-from', 'f-end-to'].forEach((id) => ($(id).value = ''));
   render();
 };
 $('btn-new').onclick = () => openDialog(null);
 
 $('btn-export').onclick = () => {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify({ formato: 2, readers, books }, null, 2)], { type: 'application/json' }));
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ formato: 3, readers, books }, null, 2)], { type: 'application/json' }));
   a.download = `mis-lecturas-${today()}.json`; // fecha local: toISOString() usa UTC y cerca de medianoche daría otro día
   a.click();
   URL.revokeObjectURL(a.href);
@@ -1047,8 +941,8 @@ $('file-import').onchange = async (e) => {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    // Formato actual: { formato: 2, readers, books } con lecturas. Las copias antiguas son solo la lista de libros
-    // (con fechas, puntuación y notas en el propio libro): se convierten a lecturas y conservan tus lectores.
+    // Formato actual: { formato: 3, readers, books } con un libro por lector. Las copias anteriores (formato 2 con lecturas,
+    // o solo la lista de libros con las fechas en el propio libro) se convierten y conservan tus lectores.
     const fileBooks = Array.isArray(data) ? data : Array.isArray(data?.books) ? data.books : null;
     if (!fileBooks) throw new Error();
     const fileReaders = !Array.isArray(data) && Array.isArray(data.readers) ? data.readers : null;
@@ -1057,9 +951,10 @@ $('file-import').onchange = async (e) => {
     const skipped = fileBooks.length - valid.length;
     const note = skipped ? ` (se ignoran ${skipped} sin título)` : '';
     const readersNote = fileReaders ? ' y tu lista de lectores por la suya' : '';
-    if (!confirm(`Vas a reemplazar tus ${books.length} libros por los ${valid.length} del archivo${readersNote}${note}. ¿Continuar?`)) return;
     // ids nuevos: un archivo con ids repetidos haría que editar uno afectara a otro
-    books = valid.map((b) => migrateBook({ ...b, id: crypto.randomUUID() }));
+    const imported = valid.flatMap(migrateEntry).map((b) => ({ ...b, id: crypto.randomUUID() }));
+    if (!confirm(`Vas a reemplazar tus ${books.length} libros por los ${imported.length} del archivo${readersNote}${note}. ¿Continuar?`)) return;
+    books = imported;
     if (fileReaders) {
       readers = [];
       for (const r of fileReaders) {
@@ -1068,7 +963,7 @@ $('file-import').onchange = async (e) => {
       }
     }
     syncReaders();
-    saveReaders(); save(); refreshReaderOptions(); render();
+    saveReaders(); save(); refreshProfileOptions(); render();
   } catch { alert('El archivo no es válido. Elige una copia descargada con «Exportar copia».'); }
 };
 
@@ -1090,5 +985,5 @@ try {
 } catch {}
 $('f-sort').addEventListener('input', () => { try { localStorage.setItem(SORT_KEY, $('f-sort').value); } catch {} });
 
-refreshReaderOptions();
+refreshProfileOptions();
 render();
