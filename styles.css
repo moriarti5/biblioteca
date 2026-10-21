@@ -353,7 +353,9 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
   .dialog-header { padding: 16px; }
   .dialog-body { padding: 16px; }
   .book-form { gap: 14px; padding: 17px 16px 0; }
-  .dialog-footer { margin: 0 -16px; padding: 12px 16px; gap: 8px; }
+  .dialog-footer { margin: 0 -16px; padding: 12px 16px; gap: 8px; flex-wrap: wrap; } /* en 360px con Eliminar no caben tres botones: pasa a dos filas en vez de desbordar */
+  .dialog-footer .spacer { display: none; }
+  .dialog-footer-actions { margin-left: auto; }
   .dialog-footer button { white-space: nowrap; }
   .dialog-footer .primary-button { gap: 0; padding-inline: 14px; }
   .dialog-footer .primary-button .icon { display: none; } /* sin el icono caben Eliminar, Cancelar y Guardar en una línea */
