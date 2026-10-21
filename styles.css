@@ -365,6 +365,13 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
   .rating-options button { flex: 1 0 calc(20% - 5px); width: auto; }
 }
 
+/* En móviles estrechos (≈360px) Eliminar, Cancelar y Guardar no caben en una línea: Eliminar queda solo con el icono (el texto sigue para lectores de pantalla) */
+@media (max-width: 420px) {
+  .dialog-footer #btn-delete { padding-inline: 12px; }
+  .dialog-footer #btn-delete .delete-label { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .dialog-footer #btn-delete .icon { margin: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
