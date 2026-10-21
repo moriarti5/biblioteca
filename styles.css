@@ -306,7 +306,12 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
   .menu > summary, .primary-button, .secondary-button, .danger-button, .dialog-footer .primary-button, .dialog-footer .secondary-button, .dialog-close, .menu-panel button { min-height: 44px; }
   .dialog-close { width: 44px; height: 44px; }
   .menu > summary { display: inline-flex; align-items: center; }
-  .profile-select { min-height: 44px; }
+  /* El panel de Opciones se ancla a la fila de botones, no a su botón: según cuántos quepan en la fila, Opciones queda a la izquierda o a la derecha */
+  .page-actions { position: relative; }
+  .menu { position: static; }
+  .menu-panel { left: 0; right: auto; max-width: 100%; }
+  .profile-select { min-height: 44px; max-width: 100%; }
+  .profile-select select { flex: 1; min-width: 0; max-width: none; }
   .profile-select select { min-height: 42px; font-size: 16px; } /* 16px: iOS no hace zoom al enfocarlo */
   .search-field { height: 44px; }
   .search-field input { min-height: 0; } /* el objetivo táctil es todo el campo (la etiqueta), no solo el texto */
