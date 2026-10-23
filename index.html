@@ -57,6 +57,7 @@
         <div class="menu-panel">
           <button id="btn-stats">Estadísticas</button>
           <button id="btn-readers">Gestionar lectores</button>
+          <button id="btn-google">Clave de Google Books</button>
           <button id="btn-export">Exportar copia</button>
           <button id="btn-import">Importar copia</button>
           <button id="btn-theme"></button>
@@ -271,6 +272,28 @@
     <div id="readers-msg" class="readers-msg" role="status"></div>
     <ul id="readers-list" class="readers-list"></ul>
     <p id="readers-none" class="field-hint">Todavía no hay lectores.</p>
+  </div>
+</dialog>
+
+<dialog id="dlg-google" class="book-dialog" aria-labelledby="google-title">
+  <div class="dialog-header">
+    <div class="dialog-title-icon"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></div>
+    <div><p class="eyebrow">BÚSQUEDA DE LIBROS</p><h2 id="google-title">Google Books</h2></div>
+    <button type="button" class="dialog-close" id="btn-google-close" aria-label="Cerrar Google Books"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="dialog-body">
+    <p class="field-hint">Al añadir un libro se busca en Open Library y en Apple Books. Con una clave gratuita de Google Books, también en Google, que tiene el catálogo más completo en español.</p>
+    <ol class="field-hint steps">
+      <li>Entra en <strong>console.cloud.google.com</strong>, crea un proyecto y activa «Books API».</li>
+      <li>En «Credenciales» crea una «Clave de API» (conviene restringirla a la dirección donde usas esta página).</li>
+      <li>Pégala aquí. Se guarda solo en este navegador y no va en las copias de seguridad.</li>
+    </ol>
+    <form id="google-form" class="inline-add">
+      <input id="google-key" type="text" maxlength="200" placeholder="Tu clave de API" aria-label="Clave de API de Google Books" autocomplete="off" spellcheck="false">
+      <button type="submit" class="primary-button">Guardar</button>
+    </form>
+    <button type="button" id="google-remove" class="text-button">Quitar la clave</button>
+    <div id="google-msg" class="readers-msg" role="status"></div>
   </div>
 </dialog>
 

@@ -276,6 +276,7 @@ legend .icon { width: 13px; height: 13px; color: var(--primary-ink); }
 
 /* Lectores */
 #dlg-readers { width: min(520px, calc(100% - 28px)); }
+.steps { display: grid; gap: 6px; margin: 0; padding-left: 20px; }
 .readers-msg { min-height: 1.5em; font-size: 13px; color: var(--text-2); }
 .readers-msg button { border: 0; background: transparent; padding: 0 4px; color: var(--primary-ink); font-weight: 700; text-decoration: underline; cursor: pointer; }
 .readers-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }

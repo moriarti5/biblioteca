@@ -503,7 +503,7 @@ function syncRating() {
 }
 $('cover').addEventListener('input', updatePreview);
 
-// ---------- Búsqueda automática en Open Library ----------
+// ---------- Búsqueda automática de libros (Open Library, Apple Books y, con tu clave, Google Books) ----------
 const SEARCH_LIMIT = 20;
 const SEARCH_TIMEOUT_MS = 12000;
 // Para comparar títulos: sin acentos, mayúsculas ni signos
@@ -571,18 +571,28 @@ $('dlg').addEventListener('focusin', (e) => {
 // Tocar la lista no le quita el foco al título (así no se pierde el clic ni se esconde el teclado)
 $('suggestions').addEventListener('mousedown', (e) => e.preventDefault());
 
-async function fetchBooks(query) {
+// Todas las fuentes se consultan con fetch directo desde el navegador (con CORS) y se normalizan a
+//   { title, author, year, genre, thumb, cover }   (thumb: la miniatura de la lista; cover: la URL que se guarda en el libro)
+async function fetchJson(url) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), SEARCH_TIMEOUT_MS);
   try {
-    // lang=es: de cada obra devuelve la edición en español (título y portada), no solo el título original. Ojo: sin el campo key Open Library no devuelve las ediciones.
-    const url = `https://openlibrary.org/search.json?lang=es&limit=${SEARCH_LIMIT}&fields=key,title,author_name,cover_i,subject,first_publish_year,editions&q=${encodeURIComponent(query)}`;
     const res = await fetch(url, { signal: ctl.signal });
-    if (!res.ok) throw new Error(res.status);
-    return (await res.json()).docs ?? [];
+    if (!res.ok) throw Object.assign(new Error(res.status), { status: res.status });
+    return await res.json();
   } finally {
     clearTimeout(timer);
   }
+}
+const https = (u) => (u ? String(u).replace(/^http:/, 'https:') : '');
+const yearOf = (s) => Number(String(s ?? '').slice(0, 4)) || undefined;
+
+// --- Open Library (sin clave) ---
+const olCover = (id, size) => `https://covers.openlibrary.org/b/id/${id}-${size}.jpg`;
+async function fetchBooks(query) {
+  // lang=es: de cada obra devuelve la edición en español (título y portada), no solo el título original. Ojo: sin el campo key Open Library no devuelve las ediciones.
+  const url = `https://openlibrary.org/search.json?lang=es&limit=${SEARCH_LIMIT}&fields=key,title,author_name,cover_i,subject,first_publish_year,editions&q=${encodeURIComponent(query)}`;
+  return (await fetchJson(url)).docs ?? [];
 }
 // Las dos búsquedas (normal y por prefijo) a la vez: cada una acierta donde la otra falla. Si una falla, se usa la otra.
 async function fetchBoth(text) {
@@ -592,49 +602,103 @@ async function fetchBoth(text) {
   if (!ok.length) throw settled[0].reason;
   return ok.flatMap((s) => s.value);
 }
-// Una fila por libro: el título (de la edición en español o el original) que más se parece a lo escrito, sin repetidos,
-// los que más se parecen primero (y los que no se parecen nada solo si no hay otros)
-function parseDocs(docs, typed) {
-  const seen = new Map();
-  for (const d of docs) {
+// De cada obra, el título (de la edición en español o el original) que más se parece a lo escrito
+function olItems(docs, typed) {
+  return docs.flatMap((d) => {
     const ed = d.editions?.docs?.[0];
     const title = [clean(ed?.title), clean(d.title)].filter(Boolean).sort((x, y) => overlap(typed, y) - overlap(typed, x))[0];
-    if (!title) continue;
-    const author = clean(d.author_name?.[0]);
-    const fromEdition = title === clean(ed?.title);
-    const item = {
-      title, author, year: d.first_publish_year, genre: clean(d.subject?.[0]),
-      cover: (fromEdition ? ed?.cover_i : d.cover_i) || ed?.cover_i || d.cover_i || null,
+    if (!title) return [];
+    const id = (title === clean(ed?.title) ? ed?.cover_i : d.cover_i) || ed?.cover_i || d.cover_i || null;
+    return [{ title, author: clean(d.author_name?.[0]), year: d.first_publish_year, genre: clean(d.subject?.[0]), thumb: id ? olCover(id, 'S') : '', cover: id ? olCover(id, 'L') : '' }];
+  });
+}
+
+// --- Apple Books (iTunes Search, sin clave; libros electrónicos de la tienda española) ---
+async function searchApple(text) {
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(text.trim())}&media=ebook&entity=ebook&country=es&limit=${SEARCH_LIMIT}`;
+  const results = (await fetchJson(url)).results ?? [];
+  return results.filter((r) => r.trackName).map((r) => {
+    const art = https(r.artworkUrl100 || r.artworkUrl60);
+    return {
+      title: clean(r.trackName), author: clean(r.artistName), year: yearOf(r.releaseDate),
+      genre: clean((r.genres ?? []).find((g) => !/^(libros|books)$/i.test(g))),
+      thumb: art, cover: art.replace(/\/\d+x\d+bb\.(jpg|png)$/, '/600x600bb.$1'), // la misma imagen en grande, con su proporción
     };
+  });
+}
+
+// --- Google Books (solo con la clave de API del propio usuario: sin clave responde 429) ---
+const GOOGLE_KEY = 'mis-lecturas-google-key';
+const googleKey = () => { try { return localStorage.getItem(GOOGLE_KEY) || ''; } catch { return ''; } };
+async function searchGoogle(text) {
+  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(text.trim())}&maxResults=${SEARCH_LIMIT}&printType=books&key=${encodeURIComponent(googleKey())}`;
+  const items = (await fetchJson(url)).items ?? [];
+  return items.filter((i) => i.volumeInfo?.title).map((i) => {
+    const v = i.volumeInfo;
+    const img = https(v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail).replace('&edge=curl', '');
+    return { title: clean(v.title), author: clean(v.authors?.[0]), year: yearOf(v.publishedDate), genre: clean(v.categories?.[0]), thumb: img, cover: img };
+  });
+}
+
+// Todas las fuentes a la vez: si una falla se usan las demás (y se avisa); solo es un error si fallan todas
+const SOURCES = [
+  { name: 'Open Library', run: async (text) => olItems(await fetchBoth(text), text) },
+  { name: 'Apple Books', run: searchApple },
+  { name: 'Google Books', run: searchGoogle, needsKey: true },
+];
+async function searchAll(text) {
+  const active = SOURCES.filter((s) => !s.needsKey || googleKey());
+  const settled = await Promise.allSettled(active.map((s) => s.run(text)));
+  const ok = settled.filter((s) => s.status === 'fulfilled');
+  if (!ok.length) throw settled[0].reason;
+  return {
+    items: ok.flatMap((s) => s.value),
+    failed: active.map((s, i) => ({ name: s.name, err: settled[i].reason })).filter((_, i) => settled[i].status === 'rejected'),
+  };
+}
+// Una fila por libro, sin repetidos (aunque vengan de fuentes distintas), los que más se parecen a lo escrito primero
+// (y los que no se parecen nada solo si no hay otros)
+function rank(items, typed) {
+  const seen = new Map();
+  for (const it of items) {
     // el autor también cuenta ("patria aramburu"); a igual parecido, mejor con portada y con el título más corto
-    item.score = Math.max(overlap(typed, title), overlap(typed, `${title} ${author}`)) + (item.cover ? 0.02 : 0) - title.length * 0.0004;
-    const key = `${plain(title)}|${plain(author)}`;
+    it.score = Math.max(overlap(typed, it.title), overlap(typed, `${it.title} ${it.author}`)) + (it.cover ? 0.02 : 0) - it.title.length * 0.0004;
+    const key = `${plain(it.title)}|${plain(it.author)}`;
     const prev = seen.get(key);
-    if (!prev) seen.set(key, item);
-    else if (!prev.cover && item.cover) { prev.cover = item.cover; prev.score = Math.max(prev.score, item.score); }
+    if (!prev) { seen.set(key, it); continue; }
+    if (!prev.cover && it.cover) Object.assign(prev, { thumb: it.thumb, cover: it.cover, score: Math.max(prev.score, it.score) });
+    prev.genre ||= it.genre;
+    prev.year ||= it.year;
   }
-  const all = [...seen.values()].sort((x, y) => y.score - x.score); // estable: a igual parecido, el orden de Open Library
+  const all = [...seen.values()].sort((x, y) => y.score - x.score); // estable: a igual parecido, el orden de las fuentes
   const close = all.filter((r) => r.score >= 0.5);
   return (close.length ? close : all).slice(0, SEARCH_LIMIT);
+}
+// Aviso de las fuentes que no respondieron (la clave de Google rechazada merece su propio mensaje)
+function failedNote(failed) {
+  const bad = failed.find((f) => f.name === 'Google Books' && [400, 403].includes(f.err?.status));
+  const others = failed.filter((f) => f !== bad).map((f) => f.name);
+  return [bad && 'Google Books no acepta tu clave (Opciones → Google Books).', others.length && `${others.join(' y ')} no ${others.length > 1 ? 'respondieron' : 'respondió'}.`].filter(Boolean).map((s) => ` ${s}`).join('');
 }
 
 async function searchBooks(text) {
   const seq = ++searchSeq;
   $('search-status').textContent = 'Buscando en internet…';
   try {
-    let docs = await fetchBoth(text);
+    let { items, failed } = await searchAll(text);
     let note = '';
     // Sin resultados: se prueba sin la última palabra, por si lleva una errata
     const words = text.trim().split(/\s+/);
-    if (!docs.length && words.length > 1) {
-      docs = await fetchBoth(`${words.slice(0, -1).join(' ')} `);
-      if (docs.length) note = ` (sin «${words[words.length - 1]}»)`;
+    if (!items.length && words.length > 1) {
+      ({ items, failed } = await searchAll(`${words.slice(0, -1).join(' ')} `));
+      if (items.length) note = ` (sin «${words[words.length - 1]}»)`;
     }
     if (seq !== searchSeq) return; // llegó una búsqueda más reciente
-    const results = parseDocs(docs, text);
+    const results = rank(items, text);
+    const warn = failedNote(failed);
     $('search-status').textContent = results.length
-      ? `${results.length} resultados${note}. Elige uno o usa tu título tal cual.`
-      : 'No hemos encontrado ese título. Puedes rellenar los campos a mano.';
+      ? `${results.length} resultados${note}.${warn} Elige uno o usa tu título tal cual.`
+      : `No hemos encontrado ese título.${warn} Puedes rellenar los campos a mano.`;
     showSuggestions(results, text.trim());
   } catch (err) {
     if (seq !== searchSeq) return;
@@ -652,9 +716,9 @@ function showSuggestions(results, typed) {
     li.id = `sug-${n}`;
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', 'false');
-    const thumb = r.cover ? document.createElement('img') : document.createElement('div');
-    if (r.cover) {
-      thumb.src = coverUrl(r.cover, 'S');
+    const thumb = r.thumb ? document.createElement('img') : document.createElement('div');
+    if (r.thumb) {
+      thumb.src = r.thumb;
       thumb.alt = ''; // decorativa: el título ya está en el texto de al lado
       thumb.width = 32; thumb.height = 48; // evita saltos de maquetación al cargar
     } else {
@@ -694,14 +758,12 @@ function useTyped() {
   $('author').focus();
 }
 
-const coverUrl = (id, size) => `https://covers.openlibrary.org/b/id/${id}-${size}.jpg`;
-
 function pick(r) {
   // Si el resultado no se parece a lo escrito (p. ej. está en otro idioma), se conserva tu título y se rellena lo demás
   const typed = $('title').value.trim();
   const keepTyped = Math.max(overlap(typed, r.title), overlap(typed, `${r.title} ${r.author}`)) < 0.6; // también cuenta el autor: "patria aramburu" -> Patria
   if (!keepTyped) $('title').value = r.title;
-  if (r.cover) $('cover').value = coverUrl(r.cover, 'L');
+  if (r.cover) $('cover').value = r.cover;
   if (r.author) $('author').value = r.author;
   if (!$('genre').value && r.genre) $('genre').value = r.genre;
   setOpen(false);
@@ -823,6 +885,41 @@ $('btn-readers').onclick = () => {
   $('dlg-readers').showModal();
 };
 $('btn-readers-close').onclick = () => $('dlg-readers').close();
+
+// ---------- Clave de Google Books ----------
+// Google Books solo funciona con una clave de API propia (sin clave responde 429). Se guarda solo en este navegador
+// y no viaja en las copias de seguridad.
+const googleMsg = (text) => { $('google-msg').textContent = text; };
+$('btn-google').onclick = () => {
+  $('google-key').value = googleKey();
+  googleMsg(googleKey() ? 'Hay una clave guardada: la búsqueda también usa Google Books.' : '');
+  $('dlg-google').showModal();
+};
+$('btn-google-close').onclick = () => $('dlg-google').close();
+$('google-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const key = $('google-key').value.trim();
+  if (!key) { googleMsg('Pega tu clave de API.'); return; }
+  googleMsg('Comprobando la clave…');
+  let note = '';
+  try {
+    await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=libro&maxResults=1&key=${encodeURIComponent(key)}`);
+  } catch (err) {
+    if ([400, 403].includes(err.status)) { googleMsg('Google no acepta esa clave. Comprueba que sea una clave de API y que «Books API» esté activada en su proyecto.'); return; }
+    note = ' No se pudo comprobar (¿sin conexión?).'; // se guarda igualmente
+  }
+  try {
+    localStorage.setItem(GOOGLE_KEY, key);
+    googleMsg(`Clave guardada: la búsqueda también usa Google Books.${note}`);
+  } catch {
+    googleMsg('No se pudo guardar la clave en este navegador.');
+  }
+});
+$('google-remove').onclick = () => {
+  try { localStorage.removeItem(GOOGLE_KEY); } catch {}
+  $('google-key').value = '';
+  googleMsg('Clave quitada: la búsqueda vuelve a usar solo Open Library y Apple Books.');
+};
 
 // ---------- Estadísticas ----------
 const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
