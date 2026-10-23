@@ -1084,3 +1084,7 @@ $('f-sort').addEventListener('input', () => { try { localStorage.setItem(SORT_KE
 
 refreshProfileOptions();
 render();
+
+// ---------- Instalable (PWA) ----------
+// El service worker (sw.js) hace que Chrome ofrezca instalar la web como app y que abra sin conexión. Solo con http(s): desde file:// no existe.
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
